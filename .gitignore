@@ -1,0 +1,10 @@
+# General
+*.bak
+
+# Go
+go.mod
+go.sum
+
+# Terraform
+.terraform*
+*.tfstate*
