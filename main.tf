@@ -1,125 +1,89 @@
-# ---------------------------------------------------------------------------------------------------------------------
-# PIN TERRAFORM VERSION TO >= 0.12
-# The examples have been upgraded to 0.12 syntax
-# ---------------------------------------------------------------------------------------------------------------------
-
-provider "aws" {
-  region = var.region
+# AWS.RDS.20
+resource "random_integer" "port" {
+  min = 49152
+  max = 65535
 }
 
-terraform {
-  # This module is now only being tested with Terraform 0.13.x. However, to make upgrading easier, we are setting
-  # 0.12.26 as the minimum version, as that version added support for required_providers with source URLs, making it
-  # forwards compatible with 0.13.x code.
-  required_version = ">= 0.12.26"
-}
+module "db" {
+  source  = "terraform-aws-modules/rds/aws"
+  version = "~> 3.0"
 
-# ---------------------------------------------------------------------------------------------------------------------
-# DEPLOY INTO THE DEFAULT VPC AND SUBNETS
-# To keep this example simple, we are deploying into the Default VPC and its subnets. In real-world usage, you should
-# deploy into a custom VPC and private subnets. Given the subnet group needs to span multiple AZs and hence subnets we
-# have deployed it across all the subnets of the default VPC.
-# ---------------------------------------------------------------------------------------------------------------------
+  auto_minor_version_upgrade = true # AWS.RDS.16
 
-data "aws_vpc" "default" {
-  default = true
-}
+  copy_tags_to_snapshot = true # AWS.RDS.17
 
-data "aws_subnet_ids" "all" {
-  vpc_id = data.aws_vpc.default.id
-}
+  identifier = var.instance_identifier
 
-# ---------------------------------------------------------------------------------------------------------------------
-# CREATE AN SUBNET GROUP ACROSS ALL THE SUBNETS OF THE DEFAULT ASG TO HOST THE RDS INSTANCE
-# ---------------------------------------------------------------------------------------------------------------------
+  engine                = var.engine_name
+  engine_version        = var.engine_version
+  instance_class        = var.instance_class
+  allocated_storage     = var.allocated_storage
+  max_allocated_storage = var.allocated_storage * 2 # AWS.RDS.23
 
-resource "aws_db_subnet_group" "example" {
-  name       = var.name
-  subnet_ids = data.aws_subnet_ids.all.ids
+  name     = var.database_name
+  username = var.username
+  password = var.password
+  port     = random_integer.port.result # AWS.RDS.20
+
+  iam_database_authentication_enabled = true # AWS.RDS.15
+
+  vpc_security_group_ids = var.security_group_ids
+
+  maintenance_window       = var.maintenance_window
+  backup_window            = var.environment_type == "prod" ? var.backup_window : null # AWS.RDS.21
+  delete_automated_backups = var.environment_type == "prod" ? false : true             # AWS.RDS.21
+
+  # Enhanced Monitoring - see example for details on how to create the role
+  # by yourself, in case you don't want to create it automatically
+  monitoring_interval                   = "30"
+  monitoring_role_name                  = "MyRDSMonitoringRole"
+  performance_insights_enabled          = var.environment_type == "prod" ? true : false # AWS.RDS.14
+  performance_insights_retention_period = var.performance_insights_retention_period
+  create_monitoring_role                = true
 
   tags = {
-    Name = var.name
-  }
-}
-
-# ---------------------------------------------------------------------------------------------------------------------
-# CREATE A CUSTOM PARAMETER GROUP AND AN OPTION GROUP FOR CONFIGURABILITY
-# ---------------------------------------------------------------------------------------------------------------------
-
-resource "aws_db_option_group" "example" {
-  name                 = var.name
-  engine_name          = var.engine_name
-  major_engine_version = var.major_engine_version
-
-  tags = {
-    Name = var.name
+    Owner       = "user"
+    Environment = "dev"
   }
 
-  option {
-    option_name = "MARIADB_AUDIT_PLUGIN"
+  # DB subnet group
+  subnet_ids = var.subnet_ids # AWS.RDS.18
 
-    option_settings {
-      name  = "SERVER_AUDIT_EVENTS"
-      value = "CONNECT"
-    }
-  }
-}
-
-resource "aws_db_parameter_group" "example" {
-  name   = var.name
+  # DB parameter group
   family = var.family
 
-  tags = {
-    Name = var.name
-  }
+  # DB option group
+  major_engine_version = var.major_engine_version
 
-  parameter {
-    name  = "general_log"
-    value = "0"
-  }
-}
+  # Database Deletion Protection
+  deletion_protection = var.environment_type == "prod" ? true : false
 
-# ---------------------------------------------------------------------------------------------------------------------
-# CREATE A SECURITY GROUP TO ALLOW ACCESS TO THE RDS INSTANCE
-# ---------------------------------------------------------------------------------------------------------------------
+  parameters = [
+    {
+      name  = "character_set_client"
+      value = "utf8mb4"
+    },
+    {
+      name  = "character_set_server"
+      value = "utf8mb4"
+    }
+  ]
 
-resource "aws_security_group" "db_instance" {
-  name   = var.name
-  vpc_id = data.aws_vpc.default.id
-}
 
-resource "aws_security_group_rule" "allow_db_access" {
-  type              = "ingress"
-  from_port         = var.port
-  to_port           = var.port
-  protocol          = "tcp"
-  security_group_id = aws_security_group.db_instance.id
-  cidr_blocks       = ["62.31.163.139/32"]
-}
+  options = [
+    {
+      option_name = "MARIADB_AUDIT_PLUGIN"
 
-# ---------------------------------------------------------------------------------------------------------------------
-# CREATE THE DATABASE INSTANCE
-# ---------------------------------------------------------------------------------------------------------------------
-
-resource "aws_db_instance" "example" {
-  identifier             = var.name
-  engine                 = var.engine_name
-  engine_version         = var.engine_version
-  port                   = var.port
-  name                   = var.database_name
-  username               = var.username
-  password               = var.password
-  instance_class         = var.instance_class
-  allocated_storage      = var.allocated_storage
-  skip_final_snapshot    = true
-  license_model          = var.license_model
-  db_subnet_group_name   = aws_db_subnet_group.example.id
-  vpc_security_group_ids = [aws_security_group.db_instance.id]
-  publicly_accessible    = true
-  parameter_group_name   = aws_db_parameter_group.example.id
-  option_group_name      = aws_db_option_group.example.id
-
-  tags = {
-    Name = var.name
-  }
+      option_settings = [
+        {
+          name  = "SERVER_AUDIT_EVENTS"
+          value = "CONNECT"
+        },
+        {
+          name  = "SERVER_AUDIT_FILE_ROTATIONS"
+          value = "37"
+        },
+      ]
+    },
+  ]
 }
